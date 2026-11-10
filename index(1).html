@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Hunter</title>
+<style>
+  :root { --bark:#2b1d12; --wood:#5a3d24; --paper:#efe4cc; --ink:#22170e; --gold:#e0a82e; --red:#b8402a; color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bark); color:var(--paper); font-family: Georgia, "Times New Roman", serif; }
+  body { display:flex; align-items:center; justify-content:center; padding:env(safe-area-inset-top) 8px env(safe-area-inset-bottom); }
+  .game { position:relative; width:min(100%, calc((100vh - 16px) * 1.6), 960px); aspect-ratio:8/5; }
+  canvas { width:100%; height:100%; display:block; cursor:none; border:3px solid var(--wood); border-radius:6px; touch-action:none; background:#000; }
+  .ov { position:absolute; inset:0; background:rgba(28,18,10,.93); border-radius:6px; padding:clamp(8px,2.5%,22px); overflow:auto; display:flex; flex-direction:column; gap:10px; }
+  .ov.hidden { display:none; }
+  h1 { margin:0; font-size:clamp(1.6rem,5vw,2.6rem); letter-spacing:.04em; }
+  h2 { margin:0; font-size:clamp(1.1rem,3vw,1.6rem); }
+  p { margin:0; }
+  .row { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; }
+  .coins { color:var(--gold); font-weight:700; font-size:1.1rem; }
+  button { font:inherit; cursor:pointer; background:var(--paper); color:var(--ink); border:0; border-radius:4px; padding:8px 16px; }
+  button:disabled { opacity:.35; cursor:not-allowed; }
+  button.pri { background:var(--gold); font-weight:700; }
+  button:focus-visible { outline:3px solid var(--red); outline-offset:2px; }
+  .lv { display:grid; grid-template-columns:repeat(auto-fill,minmax(52px,1fr)); gap:6px; }
+  .lv button { padding:8px 0; }
+  .lv button.done { background:#9bb98a; }
+  .wp { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:8px; }
+  .card { background:var(--wood); border-radius:6px; padding:10px; display:flex; flex-direction:column; gap:4px; font-size:.9rem; }
+  .card.eq { outline:2px solid var(--gold); }
+  .card b { font-size:1.05rem; }
+  .muted { opacity:.75; }
+</style>
+</head>
+<body>
+<div class="game">
+  <canvas id="c" width="800" height="500" aria-label="Spielfeld"></canvas>
+  <div class="ov" id="ov"></div>
+</div>
+
+<script>
+(() => {
+  const W = 800, H = 500, cv = document.getElementById('c'), ctx = cv.getContext('2d'), ov = document.getElementById('ov');
+  const WEAPONS = [
+    { n:'Luftgewehr',    dmg:1, cd:350, mag:10, rl:1200, r:22, price:0,    d:'Schwach, aber schnell nachgeladen.' },
+    { n:'Jagdbüchse',    dmg:2, cd:600, mag:5,  rl:1500, r:24, price:150,  d:'Solide Einsteigerwaffe.' },
+    { n:'Repetierer',    dmg:3, cd:450, mag:8,  rl:1800, r:26, price:450,  d:'Gute Feuerrate und Magazin.' },
+    { n:'Doppelflinte',  dmg:4, cd:300, mag:2,  rl:1600, r:55, price:1000, d:'Großer Streukreis trifft mehrere Tiere.' },
+    { n:'Scharfschützengewehr', dmg:9, cd:900, mag:4, rl:2200, r:20, price:2200, d:'Enormer Schaden pro Schuss.' }
+  ];
+  const ANIMALS = [
+    { n:'Hase',        e:'🐇', hp:1, sp:150, coin:5,  s:.8, min:1 },
+    { n:'Fuchs',       e:'🦊', hp:2, sp:120, coin:8,  s:.9, min:3 },
+    { n:'Reh',         e:'🦌', hp:3, sp:95,  coin:12, s:1.1, min:6 },
+    { n:'Wildschwein', e:'🐗', hp:4, sp:80,  coin:18, s:1.1, min:10 },
+    { n:'Hirsch',      e:'🦌', hp:6, sp:70,  coin:28, s:1.4, min:15 },
+    { n:'Bär',         e:'🐻', hp:9, sp:55,  coin:45, s:1.5, min:20 }
+  ];
+  const TIME = 45;
+
+  let save = { coins:0, owned:[0], eq:0, unlocked:1, done:[] };
+  try { Object.assign(save, JSON.parse(localStorage.getItem('hunter-save')) || {}); } catch (e) {}
+  const persist = () => { try { localStorage.setItem('hunter-save', JSON.stringify(save)); } catch (e) {} };
+
+  // Hintergrund einmal vorrendern
+  const bg = document.createElement('canvas'); bg.width = W; bg.height = H;
+  (function () {
+    const g = bg.getContext('2d'); let s = 7; const rnd = () => (s = (s * 16807) % 2147483647) / 2147483647;
+    let gr = g.createLinearGradient(0, 0, 0, 260); gr.addColorStop(0, '#9fc3b5'); gr.addColorStop(1, '#dfe9c8');
+    g.fillStyle = gr; g.fillRect(0, 0, W, H);
+    const tree = (x, y, h, c) => { g.fillStyle = '#3b2a1a'; g.fillRect(x - h * .04, y - h * .3, h * .08, h * .3);
+      g.fillStyle = c; for (let i = 0; i < 3; i++) { const by = y - h * .25 - (2 - i) * h * .22, hw = h * (.2 + i * .07);
+        g.beginPath(); g.moveTo(x, by - h * .3); g.lineTo(x - hw, by); g.lineTo(x + hw, by); g.fill(); } };
+    for (let i = 0; i < 26; i++) tree(rnd() * W, 250, 90 + rnd() * 50, '#6f9170');
+    g.fillStyle = '#7a9a52'; g.fillRect(0, 250, W, 250);
+    gr = g.createLinearGradient(0, 250, 0, 500); gr.addColorStop(0, 'rgba(255,255,255,.15)'); gr.addColorStop(1, 'rgba(0,0,0,.25)');
+    g.fillStyle = gr; g.fillRect(0, 250, W, 250);
+    for (let i = 0; i < 12; i++) tree(rnd() * W, 290 + rnd() * 40, 150 + rnd() * 60, '#3f6b3c');
+    for (let i = 0; i < 160; i++) { g.fillStyle = rnd() > .5 ? '#5f8440' : '#8aab5c'; g.fillRect(rnd() * W, 300 + rnd() * 200, 3, 6); }
+    // Hochsitz-Rahmen
+    g.fillStyle = '#4a3220'; g.fillRect(0, 0, W, 34); g.fillRect(0, 0, 38, H); g.fillRect(W - 38, 0, 38, H); g.fillRect(0, 456, W, 44);
+    g.fillStyle = '#6a4a2e'; g.fillRect(0, 450, W, 10);
+    g.strokeStyle = '#2b1d12'; g.lineWidth = 2;
+    for (let x = 0; x < W; x += 40) { g.beginPath(); g.moveTo(x, 460); g.lineTo(x, H); g.stroke(); }
+  })();
+
+  let st = null, last = 0, mouse = { x: W / 2, y: H / 2 };
+  const wp = () => WEAPONS[save.eq];
+  const quota = l => 5 + Math.ceil(l * .6);
+  const coinMul = l => 1 + l * .08;
+
+  function startLevel(l) {
+    ov.classList.add('hidden');
+    st = { l, kills: 0, need: quota(l), time: TIME, an: [], fx: [], spawn: .4, ammo: wp().mag, cd: 0, rl: 0, earned: 0, over: false, flash: 0 };
+  }
+
+  function spawn() {
+    const ok = ANIMALS.filter(a => a.min <= st.l), a = ok[Math.floor(Math.random() * ok.length)];
+    const y = 290 + Math.random() * 150, sc = (.55 + (y - 250) / 220) * a.s, dir = Math.random() < .5 ? 1 : -1;
+    const hp = Math.ceil(a.hp * (1 + (st.l - 1) * .08));
+    st.an.push({ a, x: dir > 0 ? -40 : W + 40, y, sz: 44 * sc, dir, v: a.sp * (.6 + sc * .4) * (1 + st.l * .015), hp, max: hp, dead: 0, pause: 0 });
+    st.an.sort((p, q) => p.y - q.y);
+  }
+
+  function shoot() {
+    if (!st || st.over || st.cd > 0 || st.rl > 0) return;
+    const w = wp();
+    if (st.ammo <= 0) return reload();
+    st.ammo--; st.cd = w.cd / 1000; st.flash = .08;
+    const hits = st.an.filter(t => !t.dead && Math.hypot(t.x - mouse.x, t.y - mouse.y) < t.sz * .5 + w.r);
+    hits.sort((p, q) => Math.hypot(p.x - mouse.x, p.y - mouse.y) - Math.hypot(q.x - mouse.x, q.y - mouse.y));
+    (w.r > 40 ? hits : hits.slice(0, 1)).forEach(t => {
+      t.hp -= w.dmg; st.fx.push({ x: t.x, y: t.y - t.sz * .5, t: .5, txt: '-' + w.dmg, c: '#fff' });
+      if (t.hp <= 0) {
+        t.dead = .8; st.kills++;
+        const c = Math.round(t.a.coin * coinMul(st.l)); save.coins += c; st.earned += c;
+        st.fx.push({ x: t.x, y: t.y - t.sz, t: 1, txt: '+' + c + ' 🪙', c: '#e0a82e' });
+      }
+    });
+    if (st.ammo <= 0) reload();
+    if (st.kills >= st.need) end(true);
+  }
+
+  function reload() { if (st && !st.over && st.rl <= 0 && st.ammo < wp().mag) st.rl = wp().rl / 1000; }
+
+  function end(win) {
+    st.over = true;
+    let bonus = 0;
+    if (win) { bonus = Math.round(20 + st.l * 6); save.coins += bonus; st.earned += bonus;
+      if (!save.done.includes(st.l)) save.done.push(st.l);
+      save.unlocked = Math.max(save.unlocked, Math.min(30, st.l + 1)); }
+    persist();
+    const l = st.l, e = st.earned, k = st.kills, n = st.need;
+    setTimeout(() => {
+      ov.classList.remove('hidden');
+      ov.innerHTML = `<h1>${win ? 'Level geschafft!' : 'Zeit abgelaufen'}</h1>
+        <p>Level ${l}: ${k} von ${n} Tieren erlegt.</p>
+        <p class="coins">+${e} Münzen${bonus ? ` (inkl. ${bonus} Levelbonus)` : ''} · Kontostand ${save.coins}</p>
+        <div class="row"><button class="pri" id="again">${win && l < 30 ? 'Nächstes Level' : 'Nochmal spielen'}</button><button id="shop">Zum Shop</button><button id="menu">Levelauswahl</button></div>
+        ${win && l === 30 ? '<p>Du hast alle 30 Level gemeistert. Waidmannsheil!</p>' : ''}`;
+      document.getElementById('again').onclick = () => startLevel(win && l < 30 ? l + 1 : l);
+      document.getElementById('shop').onclick = showShop;
+      document.getElementById('menu').onclick = showMenu;
+    }, 700);
+  }
+
+  function showMenu() {
+    st = null; ov.classList.remove('hidden');
+    let b = ''; for (let i = 1; i <= 30; i++) b += `<button data-l="${i}" class="${save.done.includes(i) ? 'done' : ''}" ${i > save.unlocked ? 'disabled' : ''}>${i}</button>`;
+    ov.innerHTML = `<div class="row"><h1>Hunter</h1><span class="coins">🪙 ${save.coins}</span></div>
+      <p class="muted">Erlege vom Hochsitz aus die geforderte Anzahl Waldtiere, bevor die Zeit abläuft. Zielen mit Maus oder Finger, Schuss mit Klick/Tippen, R lädt nach.</p>
+      <div class="row"><h2>Level wählen</h2><button id="shop">Shop · ${WEAPONS[save.eq].n}</button></div>
+      <div class="lv">${b}</div>`;
+    ov.querySelectorAll('[data-l]').forEach(x => x.onclick = () => startLevel(+x.dataset.l));
+    document.getElementById('shop').onclick = showShop;
+  }
+
+  function showShop() {
+    st = null; ov.classList.remove('hidden');
+    const cards = WEAPONS.map((w, i) => {
+      const own = save.owned.includes(i), eq = save.eq === i;
+      return `<div class="card ${eq ? 'eq' : ''}"><b>${w.n}</b><span class="muted">${w.d}</span>
+        <span>Schaden ${w.dmg} · Magazin ${w.mag}</span><span>Feuerrate ${(1000 / w.cd).toFixed(1)}/s · Nachladen ${(w.rl / 1000).toFixed(1)} s</span>
+        <button data-i="${i}" class="${own ? '' : 'pri'}" ${eq || (!own && save.coins < w.price) ? 'disabled' : ''}>${eq ? 'Ausgerüstet' : own ? 'Ausrüsten' : `Kaufen · ${w.price} 🪙`}</button></div>`;
+    }).join('');
+    ov.innerHTML = `<div class="row"><h1>Shop</h1><span class="coins">🪙 ${save.coins}</span></div><div class="wp">${cards}</div><div><button id="back">Zurück</button></div>`;
+    ov.querySelectorAll('[data-i]').forEach(x => x.onclick = () => {
+      const i = +x.dataset.i;
+      if (!save.owned.includes(i)) { if (save.coins < WEAPONS[i].price) return; save.coins -= WEAPONS[i].price; save.owned.push(i); }
+      save.eq = i; persist(); showShop();
+    });
+    document.getElementById('back').onclick = showMenu;
+  }
+
+  function pos(e) { const r = cv.getBoundingClientRect(); mouse.x = (e.clientX - r.left) * W / r.width; mouse.y = (e.clientY - r.top) * H / r.height; }
+  cv.addEventListener('pointermove', pos);
+  cv.addEventListener('pointerdown', e => { pos(e); shoot(); });
+  addEventListener('keydown', e => { if (e.key.toLowerCase() === 'r') reload(); });
+
+  function update(dt) {
+    if (!st) return;
+    st.cd -= dt; st.flash -= dt;
+    if (st.rl > 0) { st.rl -= dt; if (st.rl <= 0) st.ammo = wp().mag; }
+    if (!st.over) {
+      st.time -= dt; if (st.time <= 0) { st.time = 0; end(false); }
+      st.spawn -= dt; if (st.spawn <= 0) { spawn(); st.spawn = Math.max(.45, 1.5 - st.l * .035) * (.6 + Math.random() * .8); }
+    }
+    st.an.forEach(t => {
+      if (t.dead) { t.dead -= dt; return; }
+      if (t.pause > 0) { t.pause -= dt; return; }
+      if (Math.random() < dt * .25 && t.a.sp < 100) t.pause = .5 + Math.random();
+      t.x += t.dir * t.v * dt;
+    });
+    st.an = st.an.filter(t => t.dead > 0 || (!t.dead && t.x > -80 && t.x < W + 80));
+    st.fx.forEach(f => { f.t -= dt; f.y -= 30 * dt; }); st.fx = st.fx.filter(f => f.t > 0);
+  }
+
+  function draw() {
+    ctx.drawImage(bg, 0, 0);
+    if (!st) return;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    st.an.forEach(t => {
+      ctx.save(); ctx.translate(t.x, t.y);
+      ctx.fillStyle = 'rgba(0,0,0,.22)'; ctx.beginPath(); ctx.ellipse(0, t.sz * .35, t.sz * .4, t.sz * .1, 0, 0, 7); ctx.fill();
+      if (t.dead) { ctx.globalAlpha = Math.max(0, t.dead / .8); ctx.rotate(Math.PI / 2 * (1 - t.dead / .8)); }
+      if (t.dir < 0) ctx.scale(-1, 1);
+      ctx.font = t.sz + 'px serif'; ctx.fillText(t.a.e, 0, 0);
+      ctx.restore();
+      if (!t.dead && t.hp < t.max) { ctx.fillStyle = '#000a'; ctx.fillRect(t.x - 18, t.y - t.sz * .6, 36, 5); ctx.fillStyle = '#c0392b'; ctx.fillRect(t.x - 18, t.y - t.sz * .6, 36 * t.hp / t.max, 5); }
+    });
+    ctx.font = 'bold 16px Georgia';
+    st.fx.forEach(f => { ctx.globalAlpha = Math.min(1, f.t * 2); ctx.fillStyle = f.c; ctx.fillText(f.txt, f.x, f.y); });
+    ctx.globalAlpha = 1;
+    const w = wp(), m = mouse; ctx.strokeStyle = st.rl > 0 ? '#aaa' : '#e03a2a'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(m.x, m.y, w.r, 0, 7); ctx.moveTo(m.x - w.r - 8, m.y); ctx.lineTo(m.x + w.r + 8, m.y); ctx.moveTo(m.x, m.y - w.r - 8); ctx.lineTo(m.x, m.y + w.r + 8); ctx.stroke();
+    if (st.flash > 0) { ctx.fillStyle = 'rgba(255,240,180,.25)'; ctx.fillRect(0, 0, W, H); }
+    ctx.fillStyle = '#efe4cc'; ctx.font = 'bold 18px Georgia';
+    ctx.textAlign = 'left'; ctx.fillText(`Level ${st.l}`, 50, 18);
+    ctx.textAlign = 'center'; ctx.fillText(`Erlegt ${st.kills}/${st.need}   ·   ${Math.ceil(st.time)} s`, W / 2, 18);
+    ctx.textAlign = 'right'; ctx.fillText(`🪙 ${save.coins}`, W - 50, 18);
+    ctx.textAlign = 'left'; ctx.fillText(`${w.n}: ${st.rl > 0 ? 'lädt nach …' : st.ammo + '/' + w.mag}`, 50, 478);
+    if (st.rl > 0) { ctx.fillStyle = '#e0a82e'; ctx.fillRect(400, 472, 140 * (1 - st.rl / (w.rl / 1000)), 8); }
+  }
+
+  function loop(t) { const dt = Math.min(.05, (t - last) / 1000 || 0); last = t; update(dt); draw(); requestAnimationFrame(loop); }
+  showMenu(); requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
